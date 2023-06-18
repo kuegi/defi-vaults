@@ -34,13 +34,14 @@ contract Vaults {
 
     uint256 internal nextVaultId;
     mapping(uint256 => Vault) public vaults;
+    mapping(address => uint256[]) public vaultsByOwner;
 
     IERC20[] public allowedCollaterals;
     LoanToken[] public allowedLoans;
     VaultScheme[] public possibleSchemes;
 
     mapping(address => uint256) public oraclePrices;
-    mapping(address => bool) private allowedOracles;
+    address private oracle;
 
     constructor() {
         owner= msg.sender;
@@ -48,14 +49,9 @@ contract Vaults {
         possibleSchemes.push(VaultScheme(1585489599,150)); //5% APR
     }
 
-    function allowOracle(address newOracle) external {
+    function setOracle(address newOracle) external {
         require(msg.sender == owner,"Only owner can add possible collateral");
-        allowedOracles[newOracle]= true;
-    }
-
-    function denyOracle(address newOracle) external {
-        require(msg.sender == owner,"Only owner can add possible collateral");
-        allowedOracles[newOracle]= false;
+       oracle= newOracle;
     }
 
     struct OraclePrice {
@@ -65,6 +61,7 @@ contract Vaults {
 
     //encode parameter like this: [["0xaddressOfToken",1234],["0xaddressOfNextToken",5678]]
     function setOraclePrices(OraclePrice[] calldata prices) external {
+        require(msg.sender == oracle,"Only oracle can set prices");
         for (uint256 i = 0; i < prices.length; i++) {
             OraclePrice calldata price= prices[i];
             oraclePrices[price.tokenAddress]= price.price;
@@ -81,6 +78,7 @@ contract Vaults {
         vault.scheme= possibleSchemes[scheme];
         vault.owner= msg.sender;
         vault.lastInterestUpdateTStamp= block.timestamp;
+        vaultsByOwner[msg.sender].push(vault.id);
         return vaultId;
     }
 
@@ -89,13 +87,14 @@ contract Vaults {
         allowedCollaterals.push(token);
     }
 
-    function createLoanToken(string memory _name, string memory _symbol) external {
+    function createLoanToken(string memory _name, string memory _symbol) external returns(address token) {
         require(msg.sender == owner,"Only owner can add loanToken");
         LoanToken newToken= new LoanToken(_name,_symbol,address(this));
         allowedLoans.push(newToken);
+        return address(newToken);
     }
 
-    function addCollateral(uint256 vaultId,IERC20 token, uint256 _amount) external payable {
+    function addCollateral(uint256 vaultId,IERC20 token, uint256 _amount) external  {
         //token and amount in msg.data
         Vault storage vault= getVault(vaultId); //no need to check for owner. anyone can add collateral
         
@@ -113,8 +112,21 @@ contract Vaults {
         vault.collaterals[token] += _amount;
     }
 
+    function removeCollateral(uint256 vaultId, IERC20 token,uint256 amount) external returns (uint256 usedAmount) {
+        Vault storage vault= getOwnedVault(vaultId);
+         uint256 coll= vault.collaterals[token];
+        int newRatio= getCollRatioForVaultWithDelta(vaultId, address(token), amount, address(0x0), 0);
+        require(newRatio < 0 || uint(newRatio) >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
+        require(coll > 0,"can't withdraw if not there");
+        if(coll < amount) {
+            amount = coll;
+        }
+        token.transfer(msg.sender,amount);
+        vault.collaterals[token] -= amount;
+        return amount;
+    }
     
-    function paybackLoan(uint256 vaultId,LoanToken token, uint256 amount) external payable {
+    function paybackLoan(uint256 vaultId,LoanToken token, uint256 amount) external returns (uint256 paid) {
         //token and amount in msg.data
         Vault storage vault= getVault(vaultId); //no need to check for owner. anyone can payback loans
         uint256 openLoan= vault.loans[token];
@@ -125,6 +137,7 @@ contract Vaults {
         }
         token.burn(msg.sender,amount);
         vault.loans[token] -= amount;
+        return amount;
     }
 
     function takeLoan(uint256 vaultId,LoanToken token, uint256 amount) external {
@@ -140,32 +153,19 @@ contract Vaults {
             revert InvalidLoan(); 
         }
         updateInterest(vaultId);
-        uint newRatio= getCollRatioForVaultWithDelta(vaultId, address(0x0), 0, address(token), amount);
-        require(newRatio >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
+        int newRatio= getCollRatioForVaultWithDelta(vaultId, address(0x0), 0, address(token), amount);
+        require(newRatio < 0 || uint(newRatio) >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
         token.mint(msg.sender,amount);
         vault.loans[token] += amount;
     }
 
-    function removeCollateral(uint256 vaultId, IERC20 token,uint256 amount) external {
-        Vault storage vault= getOwnedVault(vaultId);
-         uint256 coll= vault.collaterals[token];
-        updateInterest(vaultId);
-        uint newRatio= getCollRatioForVaultWithDelta(vaultId, address(token), amount, address(0x0), 0);
-        require(newRatio >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
-        require(coll > 0,"can't withdraw if not there");
-        if(coll < amount) {
-            amount = coll;
-        }
-        token.transfer(msg.sender,amount);
-        vault.collaterals[token] -= amount;
-    }
 
     //======================== liquidations
 
     function liquidateVault(uint256 vaultId) external {
         Vault storage vault= getVault(vaultId);
-        uint ratio= getCollRatioForVault(vaultId);
-        require(ratio < vault.scheme.minCollateralRatio,"Can only liquidate if ratio below min");
+        int ratio= getCollRatioForVault(vaultId);
+        require(ratio > 0 && uint(ratio) < vault.scheme.minCollateralRatio,"Can only liquidate if ratio below min");
         updateInterest(vaultId);
 
         for (uint256 i = 0; i < allowedLoans.length; i++) {
@@ -209,8 +209,7 @@ contract Vaults {
 
     function updateInterest(uint256 vaultId) private {
         Vault storage vault= getVault(vaultId);
-        uint256 secondsSinceUpdate = block.timestamp - vault.lastInterestUpdateTStamp;
-        uint256 interestToApply= vault.scheme.interestRatePerSecond*secondsSinceUpdate;
+        uint256 interestToApply= vault.scheme.interestRatePerSecond*(block.timestamp - vault.lastInterestUpdateTStamp);
         for (uint256 i = 0; i < allowedLoans.length; i++) {
             LoanToken token = allowedLoans[i];
             if(vault.loans[token] > 0) {
@@ -220,30 +219,39 @@ contract Vaults {
         vault.lastInterestUpdateTStamp= block.timestamp;
     }
 
-    function getCollRatioForVault(uint256 vaultId) public view returns(uint collRatio) {
+    function getCollRatioForVault(uint256 vaultId) public view returns(int collRatio) {
         Vault storage vault= getVault(vaultId);
         uint256 totalCollValue= 0;
         uint256 totalLoanValue= 0;
+        uint256 interestToApply= vault.scheme.interestRatePerSecond*(block.timestamp - vault.lastInterestUpdateTStamp);
         for (uint256 i = 0; i < allowedCollaterals.length; i++) {
             IERC20 coll= allowedCollaterals[i];
-            uint256 oracle= oraclePrices[address(coll)];
-            totalCollValue += (vault.collaterals[coll]*oracle); 
+            uint256 price= oraclePrices[address(coll)];
+            totalCollValue += (vault.collaterals[coll]*price); 
         }
         for (uint256 i = 0; i < allowedLoans.length; i++) {
             LoanToken token = allowedLoans[i];
-            uint256 oracle= oraclePrices[address(token)];
-            totalLoanValue += (vault.loans[token]*oracle);
+            uint256 price= oraclePrices[address(token)];
+            uint256 usedValue= vault.loans[token];
+            if(vault.loans[token] > 0) {
+                usedValue += (usedValue*interestToApply)/(10**18);
+            }
+            totalLoanValue += (usedValue*price);
         }
-        return totalLoanValue/totalCollValue;
+        if(totalLoanValue == 0) {
+            return -1;
+        }
+        return int(100*totalCollValue/totalLoanValue);
     }
     
-    function getCollRatioForVaultWithDelta(uint256 vaultId,address collToken, uint256 removedColl, address loanToken, uint256 addLoan) internal view returns(uint collRatio) {
+    function getCollRatioForVaultWithDelta(uint256 vaultId,address collToken, uint256 removedColl, address loanToken, uint256 addLoan) internal view returns(int collRatio) {
         Vault storage vault= getVault(vaultId);
         uint256 totalCollValue= 0;
         uint256 totalLoanValue= 0;
+        uint256 interestToApply= vault.scheme.interestRatePerSecond*(block.timestamp - vault.lastInterestUpdateTStamp);
         for (uint256 i = 0; i < allowedCollaterals.length; i++) {
             IERC20 coll= allowedCollaterals[i];
-            uint256 oracle= oraclePrices[address(coll)];
+            uint256 price= oraclePrices[address(coll)];
             uint256 usedAmount= vault.collaterals[coll];
             if(collToken == address(coll)) {
                 if(usedAmount < removedColl) {
@@ -252,17 +260,23 @@ contract Vaults {
                     usedAmount -= removedColl;
                 }
             }
-            totalCollValue += (usedAmount*oracle); 
+            totalCollValue += (usedAmount*price); 
         }
         for (uint256 i = 0; i < allowedLoans.length; i++) {
             LoanToken token = allowedLoans[i];
-            uint256 oracle= oraclePrices[address(token)];
+            uint256 price= oraclePrices[address(token)];
             uint256 usedAmount= vault.loans[token];
+            if(vault.loans[token] > 0) {
+                usedAmount += (usedAmount*interestToApply)/(10**18);
+            }
             if(loanToken == address(token)) {
                 usedAmount += addLoan;
             }
-            totalLoanValue += (usedAmount*oracle);
+            totalLoanValue += (usedAmount*price);
         }
-        return totalLoanValue/totalCollValue;
+        if(totalLoanValue == 0) {
+            return -1;
+        }
+        return int(100*totalCollValue/totalLoanValue);
     }
 }
