@@ -26,4 +26,3 @@ Note that `takeLoan`, `paybackLoan` always adds all accumulated interest to the 
 ## Liquidation
 If a vaults collateral Ratio falls below the minimum Collateral Ratio defined in the vault-scheme, it can be liquidated from anyone by calling `liquidateVault(vaultId)`. If the vault can be liquidated, all open loans (including interest) are paid back with funds from the senders address (if there are not enough funds, the tx fails) and all collateral from the vault is transferred to the sender.
 
-
