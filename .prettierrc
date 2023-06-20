@@ -1,6 +1,22 @@
 {
-  "singleQuote": true,
-  "trailingComma": "all",
-  "printWidth": 120,
-  "semi": false
+  "overrides": [
+      {
+          "files": "*.sol",
+          "options": {
+              "printWidth": 120,
+              "tabWidth": 4,
+              "useTabs": false,
+              "singleQuote": false,
+              "bracketSpacing": false
+          }
+      },
+      {
+          "files": "*.ts",
+          "options": {
+            "singleQuote": true,
+            "trailingComma": "all",
+            "printWidth": 120,
+            "semi": false}
+      }
+  ]
 }

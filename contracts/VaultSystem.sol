@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.18;
 
-import '@openzeppelin/contracts/token/ERC20/ERC20.sol';
-import './LoanToken.sol';
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./LoanToken.sol";
 
 error InvalidCollateral();
 error InvalidLoan();
@@ -48,7 +48,7 @@ contract VaultSystem {
     }
 
     function setOracle(address newOracle) external {
-        require(msg.sender == owner, 'Only owner can add possible collateral');
+        require(msg.sender == owner, "Only owner can add possible collateral");
         oracle = newOracle;
     }
 
@@ -59,7 +59,7 @@ contract VaultSystem {
 
     //encode parameter like this: [["0xaddressOfToken",1234],["0xaddressOfNextToken",5678]]
     function setOraclePrices(OraclePrice[] calldata prices) external {
-        require(msg.sender == oracle, 'Only oracle can set prices');
+        require(msg.sender == oracle, "Only oracle can set prices");
         for (uint256 i = 0; i < prices.length; i++) {
             OraclePrice calldata price = prices[i];
             oraclePrices[price.tokenAddress] = price.price;
@@ -67,7 +67,7 @@ contract VaultSystem {
     }
 
     function addPossibleCollateral(IERC20 token) external {
-        require(msg.sender == owner, 'Only owner can add possible collateral');
+        require(msg.sender == owner, "Only owner can add possible collateral");
         allowedCollateral[address(token)] = true;
         //ensure its no duplicate
         bool foundIt = false;
@@ -83,7 +83,7 @@ contract VaultSystem {
     }
 
     function createLoanToken(string memory _name, string memory _symbol) external returns (address token) {
-        require(msg.sender == owner, 'Only owner can add loanToken');
+        require(msg.sender == owner, "Only owner can add loanToken");
         LoanToken newToken = new LoanToken(_name, _symbol);
         allLoans.push(newToken);
         allowedLoan[address(newToken)] = true;
@@ -111,7 +111,7 @@ contract VaultSystem {
     }
 
     function addCollateral(uint256 vaultId, IERC20 token, uint256 _amount) external {
-        require(_amount > 0, 'cant add 0');
+        require(_amount > 0, "cant add 0");
         Vault storage vault = getVault(vaultId); //no need to check for owner. anyone can add collateral
         if (!allowedCollateral[address(token)]) {
             revert InvalidCollateral();
@@ -121,11 +121,11 @@ contract VaultSystem {
     }
 
     function removeCollateral(uint256 vaultId, IERC20 token, uint256 amount) external returns (uint256 usedAmount) {
-        require(amount > 0, 'cant withdraw 0');
+        require(amount > 0, "cant withdraw 0");
         Vault storage vault = getOwnedVault(vaultId);
         uint256 coll = vault.collaterals[address(token)];
         (, , int newRatio) = getValuesForVaultWithDelta(vaultId, address(token), amount, address(0x0), 0);
-        require(newRatio < 0 || uint(newRatio) >= vault.scheme.minCollateralRatio, 'minCollRatio must be met');
+        require(newRatio < 0 || uint(newRatio) >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
         require(coll > 0, "can't withdraw if not there");
         if (coll < amount) {
             amount = coll;
@@ -137,7 +137,7 @@ contract VaultSystem {
 
     function paybackLoan(uint256 vaultId, LoanToken token, uint256 amount) external returns (uint256 paid) {
         //token and amount in msg.data
-        require(amount > 0, 'cant payback 0');
+        require(amount > 0, "cant payback 0");
         Vault storage vault = getVault(vaultId); //no need to check for owner. anyone can payback loans
         uint256 openLoan = vault.loans[address(token)];
         updateInterest(vaultId);
@@ -152,14 +152,14 @@ contract VaultSystem {
 
     function takeLoan(uint256 vaultId, LoanToken token, uint256 amount) external {
         Vault storage vault = getOwnedVault(vaultId);
-        require(amount > 0, 'cant take 0 loan');
+        require(amount > 0, "cant take 0 loan");
 
         if (!allowedLoan[address(token)]) {
             revert InvalidLoan();
         }
         updateInterest(vaultId);
         (, , int newRatio) = getValuesForVaultWithDelta(vaultId, address(0x0), 0, address(token), amount);
-        require(uint(newRatio) >= vault.scheme.minCollateralRatio, 'minCollRatio must be met');
+        require(uint(newRatio) >= vault.scheme.minCollateralRatio, "minCollRatio must be met");
         token.mint(msg.sender, amount);
         vault.loans[address(token)] += amount;
     }
@@ -169,7 +169,7 @@ contract VaultSystem {
     function liquidateVault(uint256 vaultId) external {
         Vault storage vault = getVault(vaultId);
         int ratio = getCollRatioForVault(vaultId);
-        require(ratio > 0 && uint(ratio) < vault.scheme.minCollateralRatio, 'Can only liquidate if ratio below min');
+        require(ratio > 0 && uint(ratio) < vault.scheme.minCollateralRatio, "Can only liquidate if ratio below min");
         updateInterest(vaultId);
 
         for (uint256 i = 0; i < allLoans.length; i++) {
